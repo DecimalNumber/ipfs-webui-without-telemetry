@@ -1,7 +1,6 @@
 // @ts-check
 
 // @ts-ignore
-import root from 'window-or-global'
 import changeCase from 'change-case'
 import * as Enum from './enum.js'
 import { createSelector } from 'redux-bundler'
@@ -9,7 +8,6 @@ import { ACTIONS as FILES } from './files/consts.js'
 import { ACTIONS as CONIFG } from './config-save.js'
 import { ACTIONS as INIT } from './ipfs-provider.js'
 import { ACTIONS as EXP } from './experiments.js'
-import { getDeploymentEnv } from '../env.js'
 import { onlyOnceAfter } from '../lib/hofs/functions.js'
 
 /**
@@ -98,28 +96,6 @@ const ASYNC_ACTIONS_TO_RECORD = [
   DESKTOP.DESKTOP_SETTING_TOGGLE
 ]
 
-const COUNTLY_KEY_WEBUI = '8fa213e6049bff23b08e5f5fbac89e7c27397612'
-const COUNTLY_KEY_WEBUI_TEST = '700fd825c3b257e021bd9dbc6cbf044d33477531'
-const COUNTLY_KEY_WEBUI_KUBO = 'c4524cc93fed92a5838d4ea27c5a65526b4e7558'
-
-/**
- * @see https://github.com/ipfs/ipfs-webui/issues/2078
- * @returns {Promise<string>}
- */
-async function pickAppKey () {
-  const isProd = process.env.NODE_ENV === 'production'
-
-  if (root.ipfsDesktop?.countlyAppKey) {
-    return root.ipfsDesktop.countlyAppKey
-  }
-
-  const env = await getDeploymentEnv()
-  if (env === 'kubo') {
-    return COUNTLY_KEY_WEBUI_KUBO
-  }
-  return isProd ? COUNTLY_KEY_WEBUI : COUNTLY_KEY_WEBUI_TEST
-}
-
 const consentGroups = {
   all: ['sessions', 'events', 'views', 'location', 'crashes'],
   safe: ['sessions', 'events', 'views', 'location']
@@ -130,8 +106,6 @@ const consentGroups = {
  * @param {Store} store
  */
 function addConsent (consent, store) {
-  root.Countly.q.push(['add_consent', consent])
-
   if (store.selectIsIpfsDesktop()) {
     store.doDesktopAddConsent(consent)
   }
@@ -142,8 +116,6 @@ function addConsent (consent, store) {
  * @param {Store} store
  */
 function removeConsent (consent, store) {
-  root.Countly.q.push(['remove_consent', consent])
-
   if (store.selectIsIpfsDesktop()) {
     store.doDesktopRemoveConsent(consent)
   }
@@ -152,17 +124,9 @@ function removeConsent (consent, store) {
 /**
  * Add an event to countly.
  *
- * @param {Object} param0
- * @param {string} param0.id
- * @param {number} param0.duration
+ * @param {any} _
  */
-function addEvent ({ id, duration }) {
-  root.Countly.q.push(['add_event', {
-    key: id,
-    count: 1,
-    dur: duration
-  }])
-}
+function addEvent (_) {}
 
 /**
  * You can limit how many times an event is recorded by adding them here.
@@ -259,7 +223,6 @@ const actions = {
    * @returns {function(Context):void}
    */
   doDisableAnalytics: () => ({ dispatch, store }) => {
-    root.Countly.opt_out()
     removeConsent(consentGroups.all, store)
     dispatch({ type: 'ANALYTICS_DISABLED', payload: { consent: [] } })
   },
@@ -268,7 +231,6 @@ const actions = {
    */
   doEnableAnalytics: () => ({ dispatch, store }) => {
     removeConsent(consentGroups.all, store)
-    root.Countly.opt_in()
     addConsent(consentGroups.safe, store)
     dispatch({ type: 'ANALYTICS_ENABLED', payload: { consent: consentGroups.safe } })
   },
@@ -289,15 +251,10 @@ const actions = {
    * @returns {function(Context):void}
    */
   doRemoveConsent: (name) => ({ dispatch, store }) => {
-    const existingConsents = store.selectAnalyticsConsent()
-    const remainingConsents = existingConsents.filter(item => item !== name)
     // Ensure the users is fully opted out of analytics if they remove all consents.
     // This means the consent removal event is not sent to countly, which is good.
     // If a user tells us to send nothing, we send nothing.
     // see: https://github.com/ipfs/ipfs-webui/issues/1041
-    if (remainingConsents.length === 0) {
-      root.Countly.opt_out()
-    }
     removeConsent(name, store)
     dispatch({ type: 'ANALYTICS_REMOVE_CONSENT', payload: { name } })
   },
@@ -309,7 +266,6 @@ const actions = {
     const existingConsents = store.selectAnalyticsConsent()
     if (existingConsents.length === 0) {
       // Going from 0 to 1 consents opts you in to analytics
-      root.Countly.opt_in()
     }
     addConsent(name, store)
     dispatch({ type: 'ANALYTICS_ADD_CONSENT', payload: { name } })
@@ -323,13 +279,7 @@ const actions = {
   }
 }
 
-const createAnalyticsBundle = ({
-  countlyUrl = 'https://countly.ipfs.tech',
-  appVersion = process.env.REACT_APP_VERSION,
-  // @ts-ignore - declared but never used
-  appGitRevision = process.env.REACT_APP_GIT_REV,
-  debug = false
-}) => {
+const createAnalyticsBundle = () => {
   return {
     name: 'analytics',
 
@@ -348,31 +298,6 @@ const createAnalyticsBundle = ({
     init: async (store) => {
       // LogRocket.init('sfqf1k/ipfs-webui')
       // test code sets a mock Counly instance on the global.
-      if (!root.Countly) {
-        root.Countly = {}
-        root.Countly.q = []
-        // @ts-ignore
-        await import('countly-sdk-web')
-      }
-      const Countly = root.Countly
-
-      Countly.require_consent = true
-      Countly.url = countlyUrl
-      const countlyAppKeyPromise = pickAppKey()
-      countlyAppKeyPromise.then((appKey) => {
-        Countly.app_key = appKey
-      })
-      Countly.app_version = appVersion
-      Countly.debug = debug
-
-      if (store.selectIsIpfsDesktop()) {
-        Countly.app_version = store.selectDesktopVersion()
-        Countly.q.push(['change_id', store.selectDesktopCountlyDeviceId(), true])
-      }
-
-      // Configure what to track. Nothing is sent without user consent.
-      Countly.q.push(['track_sessions'])
-      Countly.q.push(['track_errors'])
 
       // Don't track clicks or links as it can include full url.
       // Countly.q.push(['track_clicks'])
@@ -388,22 +313,8 @@ const createAnalyticsBundle = ({
         store.doEnableAnalytics()
       }
 
-      store.subscribeToSelectors(['selectRouteInfo'], ({ routeInfo }) => {
-        // skip routes with no hash, as we'll be immediately redirected to `/#`
-        if (!root.location || !root.location.hash) return
-        /*
-        By tracking the pattern rather than the window.location, we limit the info
-        we collect to just the app sections that are viewed, and avoid recording
-        specific CIDs or local repo paths that would contain personal information.
-        */
-        root.Countly.q.push(['track_pageview', routeInfo.pattern])
+      store.subscribeToSelectors(['selectRouteInfo'], () => {
       })
-
-      // Fix for storybook error 'Countly.init is not a function'
-      if (typeof Countly.init === 'function') {
-        await countlyAppKeyPromise
-        Countly.init()
-      }
     },
 
     // Listen to redux actions
@@ -420,8 +331,6 @@ const createAnalyticsBundle = ({
 
           // Record errors. Only from explicitly selected actions.
           if (error) {
-            root.Countly.q.push(['add_log', action.type])
-            root.Countly.q.push(['log_error', error])
             // LogRocket.error(error)
             // logger.error('Error in action', action.type, error)
           }
